@@ -1,2 +1,7 @@
 streamlit
-openai
+langchain
+google-cloud-aiplatform
+python-dotenv
+beautifulsoup4
+requests
+faiss-cpu
