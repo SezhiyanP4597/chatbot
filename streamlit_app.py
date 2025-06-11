@@ -1,56 +1,69 @@
+import os
 import streamlit as st
-from openai import OpenAI
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.embeddings import VertexAIEmbeddings
+from langchain.vectorstores import FAISS
+from langchain.chains import RetrievalQA
+from langchain.llms import VertexAI
+from bs4 import BeautifulSoup
+import requests
+from dotenv import load_dotenv
 
-# Show title and description.
-st.title("💬 Chatbot")
-st.write(
-    "This is a simple chatbot that uses OpenAI's GPT-3.5 model to generate responses. "
-    "To use this app, you need to provide an OpenAI API key, which you can get [here](https://platform.openai.com/account/api-keys). "
-    "You can also learn how to build this app step by step by [following our tutorial](https://docs.streamlit.io/develop/tutorials/llms/build-conversational-apps)."
+# Load environment
+load_dotenv()
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+
+# Configure Vertex AI client via env var
+os.environ["GOOGLE_API_KEY"] = GOOGLE_API_KEY
+
+# Function to scrape Planto.ai homepage
+@st.cache_data
+def load_site_text(url: str):
+    resp = requests.get(url)
+    soup = BeautifulSoup(resp.text, "html.parser")
+    texts = [el.get_text() for el in soup.find_all(["h1","h2","h3","p","li"])]
+    return "\n".join(texts)
+
+# Prepare embeddings
+@st.cache_resource
+def get_vectorstore(text: str):
+    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+    docs = splitter.split_text(text)
+    embeddings = VertexAIEmbeddings()
+    return FAISS.from_texts(docs, embeddings)
+
+# Initialize Streamlit UI
+st.set_page_config(page_title="Planto.ai Support (Gemini)")
+st.title("Planto.ai Customer Support Chatbot (Gemini AI)")
+
+# Load and index site content once
+data = load_site_text("https://planto.ai/")
+vectorstore = get_vectorstore(data)
+
+# Set up QA chain with Vertex AI LLM
+llm = VertexAI(
+    model_name="text-bison@001",
+    temperature=0.2,
+    max_output_tokens=512
+)
+qa = RetrievalQA.from_chain_type(
+    llm=llm,
+    chain_type="stuff",
+    retriever=vectorstore.as_retriever()
 )
 
-# Ask user for their OpenAI API key via `st.text_input`.
-# Alternatively, you can store the API key in `./.streamlit/secrets.toml` and access it
-# via `st.secrets`, see https://docs.streamlit.io/develop/concepts/connections/secrets-management
-openai_api_key = st.text_input("OpenAI API Key", type="password")
-if not openai_api_key:
-    st.info("Please add your OpenAI API key to continue.", icon="🗝️")
-else:
+# Chat history
+if "history" not in st.session_state:
+    st.session_state.history = []
 
-    # Create an OpenAI client.
-    client = OpenAI(api_key=openai_api_key)
+# User input
+query = st.text_input("Ask about Planto.ai:")
+if query:
+    with st.spinner("Gemini AI is thinking..."):
+        response = qa.run(query)
+    st.session_state.history.append((query, response))
 
-    # Create a session state variable to store the chat messages. This ensures that the
-    # messages persist across reruns.
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-
-    # Display the existing chat messages via `st.chat_message`.
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-
-    # Create a chat input field to allow the user to enter a message. This will display
-    # automatically at the bottom of the page.
-    if prompt := st.chat_input("What is up?"):
-
-        # Store and display the current prompt.
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-
-        # Generate a response using the OpenAI API.
-        stream = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": m["role"], "content": m["content"]}
-                for m in st.session_state.messages
-            ],
-            stream=True,
-        )
-
-        # Stream the response to the chat using `st.write_stream`, then store it in 
-        # session state.
-        with st.chat_message("assistant"):
-            response = st.write_stream(stream)
-        st.session_state.messages.append({"role": "assistant", "content": response})
+# Display history
+for q, a in st.session_state.history:
+    st.markdown(f"**You:** {q}")
+    st.markdown(f"**Gemini AI:** {a}")
